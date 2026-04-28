@@ -30,7 +30,7 @@ def call_ai(prompt: str, is_json: bool = False):
         response = requests.post(
             "http://localhost:11434/api/generate",
             json={
-                "model": "gpt-oss:20b",
+                "model": "qwen3-coder:latest",
                 "prompt": structured_prompt,
                 "stream": False,
             },
@@ -65,25 +65,27 @@ def call_ai(prompt: str, is_json: bool = False):
 
 def get_topic_type(topic: str) -> str:
     """Uses the AI to classify the topic as 'code' or 'text'."""
-    console.print(f"[bold blue]Analyzing topic: '{topic}' to determine output format...[/bold blue]")
+    console.print(f"[bold blue]Analyzing your request to determine output format...[/bold blue]")
     prompt = f"""
-    Analyze the topic '{topic}'. Is it primarily about a specific programming language, framework, or software tool that involves writing code? Or is it a theoretical, scientific, or general knowledge subject?
+    Analyze the following user request: '{topic}'
+    
+    Is the user asking primarily for a specific programming language, framework, or software tool where code examples would be the main focus? Or are they asking for theoretical, scientific, or general knowledge content?
 
-    Respond with a single word: 'code' for programming topics, and 'text' for all others.
+    Respond with a single word: 'code' for programming/coding topics, and 'text' for all others.
     """
     response = call_ai(prompt)
     topic_type = response.strip().lower() if response else 'text'
 
     if 'code' in topic_type:
-        console.print("[bold green]Topic identified as 'code'. Will generate source files and a README.[/bold green]")
+        console.print("[bold green]Format identified as 'code'. Will generate source files and a README.[/bold green]")
         return 'code'
     else:
-        console.print("[bold green]Topic identified as 'text'. Will generate a Markdown document.[/bold green]")
+        console.print("[bold green]Format identified as 'text'. Will generate detailed markdown documents.[/bold green]")
         return 'text'
 
 # --- Text-Based Tutorial Generation (Recursive) ---
 
-def generate_text_outline_recursive(topic_path: List[str], level: int = 0) -> List[Dict[str, Any]]:
+def generate_text_outline_recursive(topic_path: List[str], user_request: str, level: int = 0) -> List[Dict[str, Any]]:
     """Recursively generates a hierarchical outline for a text tutorial."""
     if level >= 3:  # Max recursion depth to prevent infinite loops
         return []
@@ -92,15 +94,16 @@ def generate_text_outline_recursive(topic_path: List[str], level: int = 0) -> Li
     console.print(f"{'  ' * level}[bold cyan]Generating sub-outline for: '{current_topic}'...[/bold cyan]")
     
     prompt = f"""
-    You are a curriculum designer creating a tutorial on '{topic_path[0]}'.
+    The user has requested: "{user_request}"
+    
     We are currently detailing the section: '{current_topic}'.
 
-    Break this section down into a list of more detailed sub-sections.
+    Break this section down into a list of more detailed sub-sections that would help the user understand this part thoroughly.
     Return a JSON array of strings. Each string is a sub-section title.
     If this topic is fundamental and cannot be broken down further, return an empty array [].
 
-    Example for 'Calculus -> Derivatives':
-    ["Definition of the Derivative", "The Power Rule", "The Product Rule", "The Chain Rule"]
+    Example for a machine learning section:
+    ["Gradient Descent Mechanics", "Optimization Algorithms", "Convergence Analysis"]
     """
     sub_sections = call_ai(prompt, is_json=True)
 
@@ -110,88 +113,92 @@ def generate_text_outline_recursive(topic_path: List[str], level: int = 0) -> Li
     outline = []
     for title in sub_sections:
         new_topic_path = topic_path + [title]
-        children = generate_text_outline_recursive(new_topic_path, level + 1)
+        children = generate_text_outline_recursive(new_topic_path, user_request, level + 1)
         outline.append({"title": title, "path": new_topic_path, "children": children})
     
     return outline
 
 
-def generate_text_tutorial(topic: str, output_file: str):
-    """Generates a hierarchical, long-form Markdown tutorial."""
-    plan_file = f"{os.path.splitext(output_file)[0]}_plan.json"
+def generate_text_tutorial(topic: str, output_dir: str):
+    """Generates a hierarchical, long-form Markdown tutorial with numbered files."""
+    os.makedirs(output_dir, exist_ok=True)
+    plan_file = os.path.join(output_dir, "_plan.json")
 
     if os.path.exists(plan_file):
         console.print(f"[bold yellow]Found existing plan file '{plan_file}'. Resuming generation.[/bold yellow]")
         with open(plan_file, "r") as f:
             outline = json.load(f)
     else:
-        console.print(f"[bold green]Generating hierarchical tutorial outline for '{topic}'...[/bold green]")
-        outline = generate_text_outline_recursive([topic])
+        console.print(f"[bold green]Generating tutorial based on your request...[/bold green]")
+        outline = generate_text_outline_recursive([topic], topic)
         with open(plan_file, "w") as f:
             json.dump(outline, f, indent=2)
 
-    with open(output_file, "w") as f:
-        f.write(f"# Comprehensive Tutorial: {topic}\\n\\n")
-
-    # Flatten the outline and generate content
-    def process_section(section_data: Dict[str, Any], level: int):
+    # Generate content with hierarchical numbering
+    def process_section(section_data: Dict[str, Any], numbers: List[int]):
         title = section_data['title']
         path = section_data['path']
         
-        console.print(f"{'  ' * level}[bold blue]Generating content for: '{' -> '.join(path)}'...[/bold blue]")
+        # Generate numbering like "1.1", "1.2", "2.1", etc.
+        file_number = ".".join(map(str, numbers))
+        
+        console.print(f"[bold blue]Generating content for: '{' -> '.join(path)}' (file: {file_number}.md)...[/bold blue]")
         
         content_prompt = f"""
-        You are an expert technical writer and educator. Your task is to write a single, detailed section for a comprehensive tutorial on '{topic}'.
+        The user requested: "{topic}"
         
-        The full path to the current section is: '{' -> '.join(path)}'.
-        
-        Write the content for the final part of that path ('{title}').
-        - Assume the reader is a beginner.
-        - Explain the concepts clearly and thoroughly.
-        - Provide examples where helpful.
+        You are writing content for section: '{' -> '.join(path)}'.
+        Specifically, write detailed content for '{title}'.
+
+        - Assume the reader is learning from scratch.
+        - Explain concepts thoroughly and clearly.
+        - Use mathematical notation where appropriate.
+        - Provide concrete examples and intuitions.
         - Use Markdown for formatting.
-        - **IMPORTANT**: Do NOT write a title. The title is handled externally. Start directly with the content for '{title}'.
+        - Start with a title "# {title}" and then provide the content.
         """
         content = call_ai(content_prompt)
         
         if content:
-            with open(output_file, "a") as f:
-                f.write(f"{'#' * (level + 2)} {title}\\n\\n{content}\\n\\n")
+            file_path = os.path.join(output_dir, f"{file_number}.md")
+            with open(file_path, "w") as f:
+                f.write(content)
         else:
             console.print(f"[bold yellow]Warning: Could not generate content for section: '{title}'.[/bold yellow]")
 
-        for child in section_data.get("children", []):
-            process_section(child, level + 1)
+        for i, child in enumerate(section_data.get("children", []), 1):
+            process_section(child, numbers + [i])
 
-    for section in outline:
-        process_section(section, 0)
+    for i, section in enumerate(outline, 1):
+        process_section(section, [i])
     
     # Clean up the plan file after successful completion
-    os.remove(plan_file)
+    if os.path.exists(plan_file):
+        os.remove(plan_file)
 
 
 # --- Code-Based Tutorial Generation ---
 
 def generate_code_tutorial(topic: str, output_dir: str):
     """Generates a code-based tutorial with source files and a README."""
-    console.print(f"[bold green]Generating code tutorial plan for '{topic}'...[/bold green]")
+    console.print(f"[bold green]Generating code tutorial plan based on your request...[/bold green]")
     
     src_dir = os.path.join(output_dir, "src")
     os.makedirs(src_dir, exist_ok=True)
 
     outline_prompt = f"""
-    You are a senior software engineer designing a tutorial for '{topic}'.
-    Create a logical, step-by-step plan of small code examples that a beginner can follow.
+    User request: "{topic}"
+    
+    Create a logical, step-by-step plan of small code examples that a beginner can follow to learn from this request.
     
     Return a JSON array of objects. Each object must have a 'filename' and a 'description'.
     - 'filename' should be valid for the language (e.g., 01_basics.py, 02_functions.cpp).
-    - 'description' should clearly explain the concept this file will teach.
+    - 'description' should clearly explain what concept/skill this file teaches.
 
-    Example for 'Python Functions':
+    Example:
     [
-        {{"filename": "01_simple_function.py", "description": "How to define and call a basic function."}},
-        {{"filename": "02_arguments.py", "description": "Passing arguments and using default values."}},
-        {{"filename": "03_return_values.py", "description": "Returning values from a function."}}
+        {{"filename": "01_basics.py", "description": "Basic setup and Hello World example."}},
+        {{"filename": "02_variables.py", "description": "Working with variables and data types."}}
     ]
     """
     plan = call_ai(outline_prompt, is_json=True)
@@ -199,7 +206,7 @@ def generate_code_tutorial(topic: str, output_dir: str):
         console.print("[bold red]Failed to generate tutorial plan. Aborting.[/bold red]")
         return
 
-    readme_content = f"# Tutorial: {topic}\\n\\nThis tutorial teaches {topic} through a series of code examples. It's recommended to follow them in order.\\n\\n"
+    readme_content = f"# Tutorial\n\nThis tutorial teaches the following through a series of code examples. Follow them in order.\n\n"
     
     for i, item in enumerate(plan):
         filename = item.get("filename")
@@ -209,8 +216,11 @@ def generate_code_tutorial(topic: str, output_dir: str):
 
         console.print(f"[bold blue]Generating code for file {i+1}/{len(plan)}: '{filename}'...[/bold blue]")
         code_prompt = f"""
-        You are a programmer writing a single, clean code file for a tutorial on '{topic}'.
-        The file is named '{filename}' and its purpose is: '{description}'.
+        User request: "{topic}"
+        
+        Write a single, clean code file for this tutorial.
+        Filename: '{filename}'
+        Purpose: '{description}'
 
         - Write clear, well-commented, and runnable code for this specific concept.
         - **IMPORTANT**: Output ONLY the raw source code for the file. Do not add any surrounding text, explanations, or markdown formatting like ```.
@@ -249,28 +259,24 @@ def version():
 
 @app.command()
 def create(
-    topic: str = typer.Option(..., "--topic", "-t", help="The topic for the tutorial."),
-    output: str = typer.Option(None, "--output", "-o", help="The name of the output file or directory."),
+    topic: str = typer.Option(..., "--topic", "-t", help="What you want to learn. Can be a topic or a detailed request (e.g., 'I want to learn machine learning theory mathematically')."),
 ):
     """
-    Generates a comprehensive, long-form tutorial for a given topic.
+    Generates a comprehensive, long-form tutorial based on your request.
 
     The tool automatically determines the best format:
     - For programming topics, it creates a directory with commented code files and a README.
-    - For other topics (like 'Calculus'), it creates a single, detailed Markdown document,
-      recursively building the content to handle very large subjects without hitting limits.
+    - For other topics, it creates a directory with numbered markdown files (1.md, 1.1.md, 1.2.md, etc.).
     """
     topic_type = get_topic_type(topic)
+    output_dir = topic.lower().replace(" ", "_").replace(".", "")[:30] + "_tutorial"
     
-    final_output_path = ""
     if topic_type == 'text':
-        final_output_path = output if output else topic.lower().replace(" ", "_") + ".md"
-        generate_text_tutorial(topic, final_output_path)
+        generate_text_tutorial(topic, output_dir)
     elif topic_type == 'code':
-        final_output_path = output if output else topic.lower().replace(" ", "_") + "_tutorial"
-        generate_code_tutorial(topic, final_output_path)
+        generate_code_tutorial(topic, output_dir)
 
-    console.print(f"\n[bold green]Tutorial generation complete! Your tutorial is available at: '{final_output_path}'[/bold green]")
+    console.print(f"\n[bold green]Tutorial generation complete! Your tutorial is available at: '{output_dir}'[/bold green]")
 
 if __name__ == "__main__":
     app()
